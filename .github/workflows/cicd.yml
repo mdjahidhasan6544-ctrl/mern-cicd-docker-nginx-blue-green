@@ -161,6 +161,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-buildx-
 
+      - name: Ensure cache directories exist
+        run: |
+          mkdir -p /tmp/.buildx-cache/frontend /tmp/.buildx-cache/backend
+
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
