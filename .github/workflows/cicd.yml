@@ -218,20 +218,40 @@ jobs:
         with:
           image-ref: ${{ env.FRONTEND_IMAGE }}:sha-${{ github.sha }}
           format: 'table'
+          output: 'trivy-frontend-report.sarif'
           exit-code: '1'
           ignore-unfixed: true
           vuln-type: 'os,library'
           severity: 'HIGH,CRITICAL'
+
+      - name: Upload Trivy Frontend Image Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-frontend-image-report
+          path: trivy-frontend-report.sarif
+          retention-days: 30
+          if-no-files-found: warn
 
       - name: Run Trivy Image Scan - Backend
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ env.BACKEND_IMAGE }}:sha-${{ github.sha }}
           format: 'table'
+          output: 'trivy-backend-report.sarif'
           exit-code: '1'
           ignore-unfixed: true
           vuln-type: 'os,library'
           severity: 'HIGH,CRITICAL'
+
+      - name: Upload Trivy Backend Image Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-backend-image-report
+          path: trivy-backend-report.sarif
+          retention-days: 30
+          if-no-files-found: warn
 
   # =========================================================
   # 3. DEPLOY STAGE - Blue/Green deployment via SSH
