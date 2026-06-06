@@ -1,0 +1,46 @@
+# Green Environment - Runs on ports 8081 (frontend) and 5001 (backend)
+# Active when NGINX upstream points to these ports
+services:
+  backend-green:
+    image: ${BACKEND_IMAGE}:${IMAGE_TAG}
+    container_name: mern-backend-green
+    restart: unless-stopped
+    ports:
+      - "5001:5000"
+    environment:
+      - NODE_ENV=${NODE_ENV}
+      - PORT=${SERVER_PORT}
+      - MONGO_URI=${MONGODB_URI}
+      - JWT_SECRET=${JWT_SECRET}
+      - ADMIN_EMAIL=${ADMIN_EMAIL}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - mern-green
+
+  frontend-green:
+    image: ${FRONTEND_IMAGE}:${IMAGE_TAG}
+    container_name: mern-frontend-green
+    restart: unless-stopped
+    ports:
+      - "8081:80"
+    depends_on:
+      backend-green:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    networks:
+      - mern-green
+
+networks:
+  mern-green:
+    driver: bridge

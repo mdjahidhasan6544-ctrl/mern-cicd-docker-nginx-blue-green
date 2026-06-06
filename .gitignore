@@ -1,0 +1,132 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+#  O Level Stars — .gitignore
+#  Hardened for safe publication on GitHub (public or private).
+#  Rule of thumb: if it contains a secret or is auto-generated, ignore it.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── 1. SECRETS & ENVIRONMENT FILES ──────────────────────────────────────────
+# Never commit any .env file that contains real values.
+.env
+.env.local
+.env.development
+.env.production
+.env.staging
+.env.test
+.env.*.local
+
+# Sub-package env files
+backend/.env
+backend/.env.*
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+!backend/.env.example
+!.env.example
+
+# ── 2. NODE / NPM ────────────────────────────────────────────────────────────
+node_modules/
+backend/node_modules/
+frontend/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.npm/
+.pnpm-store/
+.yarn/
+package-lock.json.bak
+
+# ── 3. BUILD OUTPUT ──────────────────────────────────────────────────────────
+dist/
+build/
+out/
+.output/
+frontend/dist/
+backend/dist/
+
+# Vite cache
+.vite/
+frontend/.vite/
+
+# ── 4. LOCAL DATABASE & DATA ─────────────────────────────────────────────────
+.mongodb-data/
+backend/.mongodb-data/
+*.sqlite
+*.sqlite3
+*.db
+data/
+dump/
+
+# ── 5. CERTIFICATES & PRIVATE KEYS ──────────────────────────────────────────
+*.pem
+*.key
+*.crt
+*.csr
+*.p12
+*.pfx
+*.jks
+*.keystore
+ssl/
+certs/
+
+# ── 6. LOGS ──────────────────────────────────────────────────────────────────
+*.log
+logs/
+*.log.*
+
+# ── 7. OS FILES ──────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# ── 8. IDE & EDITOR ──────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.sublime-workspace
+
+# ── 9. CACHE & TEMP ──────────────────────────────────────────────────────────
+.cache/
+.npm-cache/
+.codex-runtime/
+tmp/
+temp/
+.tmp/
+
+# ── 10. DOCKER (LOCAL OVERRIDES) ─────────────────────────────────────────────
+docker-compose.override.yml
+docker-compose.local.yml
+
+# ── 11. COVERAGE & TEST ARTIFACTS ───────────────────────────────────────────
+coverage/
+.nyc_output/
+*.lcov
+test-results/
+
+# ── 12. CLOUD PROVIDER CREDENTIALS ──────────────────────────────────────────
+.aws/
+.gcp/
+.azure/
+credentials
+*.credentials.json
+service-account*.json
+*-service-account.json
+gcloud/
+
+# ── 13. TERRAFORM / INFRA ────────────────────────────────────────────────────
+*.tfvars
+*.tfvars.json
+.terraform/
+terraform.tfstate
+terraform.tfstate.backup
+.terraformrc
+terraform.rc

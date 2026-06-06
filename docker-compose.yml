@@ -1,0 +1,58 @@
+services:
+  # ─── Backend (Node.js / Express) ────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: development          # Switch to "production" for prod deployments
+    container_name: olevelstars-backend
+    restart: unless-stopped
+    env_file:
+      - .env                        # Root-level .env — see .env.example
+    ports:
+      - "${BACKEND_PORT:-3001}:3001"
+    volumes:
+      - ./backend:/app              # Live-reload: mount source for dev
+      - backend_node_modules:/app/node_modules   # Preserve container modules
+    networks:
+      - olevelstars-network
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ─── Frontend (React / Vite) ────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: development          # Switch to "production" for prod deployments
+    container_name: olevelstars-frontend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - VITE_API_URL=${VITE_API_URL:-http://localhost:3001}
+      - VITE_BACKEND_PROXY_URL=http://backend:3001
+    ports:
+      - "${FRONTEND_PORT:-5173}:5173"
+    volumes:
+      - ./frontend:/app            # Hot-module replacement in dev
+      - frontend_node_modules:/app/node_modules
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - olevelstars-network
+
+# ─── Persistent Volumes ─────────────────────────────────────────────────────
+volumes:
+  backend_node_modules:
+  frontend_node_modules:
+
+# ─── Network ────────────────────────────────────────────────────────────────
+networks:
+  olevelstars-network:
+    driver: bridge

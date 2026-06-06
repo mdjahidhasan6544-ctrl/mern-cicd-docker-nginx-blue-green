@@ -1,0 +1,801 @@
+name: MERN CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  FRONTEND_IMAGE: ${{ secrets.DOCKER_IMAGE }}-frontend
+  BACKEND_IMAGE: ${{ secrets.DOCKER_IMAGE }}-backend
+  SHORT_SHA: ${{ github.sha }}
+
+jobs:
+  # =========================================================
+  # 1. CI STAGE - Code quality, security scans, dependency checks
+  # =========================================================
+  ci:
+    name: CI - Static Analysis & Security Scans
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate Required Secrets
+        run: |
+          echo "::group::Validating secrets presence"
+          FAIL=0
+          for SECRET in DOCKERHUB_USERNAME DOCKERHUB_TOKEN DOCKER_IMAGE \
+                        AWS_HOST AWS_USER AWS_SSH_PRIVATE_KEY \
+                        MONGODB_URI JWT_SECRET SONAR_HOST_URL SONAR_TOKEN \
+                        NODE_ENV SERVER_PORT; do
+             if [ -z "${!SECRET}" ]; then  
+              echo "::error::Missing required secret: $SECRET"
+              FAIL=1
+            fi
+          done
+          if [ $FAIL -eq 1 ]; then
+            echo "::error::One or more required secrets are missing. Aborting."
+            exit 1
+          fi
+          echo "::endgroup::"
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          DOCKER_IMAGE: ${{ secrets.DOCKER_IMAGE }}
+          AWS_HOST: ${{ secrets.AWS_HOST }}
+          AWS_USER: ${{ secrets.AWS_USER }}
+          AWS_SSH_PRIVATE_KEY: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          NODE_ENV: ${{ secrets.NODE_ENV }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
+
+      - name: Generate sonar-project.properties (if missing)
+        run: |
+          if [ ! -f sonar-project.properties ]; then
+            echo "::notice::sonar-project.properties not found, generating dynamically..."
+            cat > sonar-project.properties <<EOF
+          sonar.projectKey=mern-app-${{ github.repository_owner }}
+          sonar.projectName=MERN Stack Application
+          sonar.projectVersion=1.0
+          sonar.sources=frontend/src,backend/src
+          sonar.exclusions=**/node_modules/**,**/dist/**,**/build/**,**/coverage/**,**/*.test.js,**/*.spec.js
+          sonar.javascript.lcov.reportPaths=frontend/coverage/lcov.info,backend/coverage/lcov.info
+          sonar.sourceEncoding=UTF-8
+          sonar.host.url=${{ secrets.SONAR_HOST_URL }}
+          sonar.login=${{ secrets.SONAR_TOKEN }}
+          EOF
+            echo "::notice::Generated sonar-project.properties"
+          else
+            echo "::notice::sonar-project.properties already exists, using existing one"
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: |
+            frontend/package-lock.json
+            backend/package-lock.json
+
+      - name: Install Frontend Dependencies
+        working-directory: ./frontend
+        run: npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+
+      - name: Install Backend Dependencies
+        working-directory: ./backend
+        run: npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+
+      - name: Run SonarQube Scan (Self-hosted)
+        uses: sonarsource/sonarqube-scan-action@v2
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        with:
+          args: >
+            -Dsonar.projectKey=mern-app-${{ github.repository_owner }}
+            -Dsonar.host.url=${{ secrets.SONAR_HOST_URL }}
+            -Dsonar.login=${{ secrets.SONAR_TOKEN }}
+
+      - name: Run OWASP Dependency-Check (fail on CRITICAL only)
+        uses: dependency-check/Dependency-Check_Action@main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          project: 'mern-app'
+          path: '.'
+          format: 'ALL'
+          args: >
+            --failOnCVSS
+            --failOnLow
+            --failOnMedium
+            --failOnHigh
+            --failBuildOnCritical
+            --enableRetired
+            --enableExperimental
+
+      - name: Run Trivy Filesystem Scan (fail on HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'HIGH,CRITICAL'
+          output: 'trivy-fs-report.txt'
+
+      - name: Upload Trivy FS Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-fs-report
+          path: trivy-fs-report.txt
+          retention-days: 30
+          if-no-files-found: warn
+
+  # =========================================================
+  # 2. BUILD STAGE - Build and push Docker images
+  # =========================================================
+  build:
+    name: Build & Push Docker Images
+    runs-on: ubuntu-latest
+    needs: ci
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: image=moby/buildkit:latest
+
+      - name: Cache Docker Layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract Metadata for Images
+        id: meta
+        run: |
+          echo "tags=latest,sha-${{ github.sha }}" >> $GITHUB_OUTPUT
+
+      - name: Build & Push Frontend Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ${{ env.FRONTEND_IMAGE }}:latest
+            ${{ env.FRONTEND_IMAGE }}:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ github.event.repository.updated_at }}
+          cache-from: type=local,src=/tmp/.buildx-cache/frontend
+          cache-to: type=local,dest=/tmp/.buildx-cache-new/frontend,mode=max
+          provenance: false
+
+      - name: Build & Push Backend Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ${{ env.BACKEND_IMAGE }}:latest
+            ${{ env.BACKEND_IMAGE }}:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ github.event.repository.updated_at }}
+          cache-from: type=local,src=/tmp/.buildx-cache/backend
+          cache-to: type=local,dest=/tmp/.buildx-cache-new/backend,mode=max
+          provenance: false
+
+      - name: Move Cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
+      - name: Run Trivy Image Scan - Frontend
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.FRONTEND_IMAGE }}:sha-${{ github.sha }}
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'HIGH,CRITICAL'
+
+      - name: Run Trivy Image Scan - Backend
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.BACKEND_IMAGE }}:sha-${{ github.sha }}
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'HIGH,CRITICAL'
+
+  # =========================================================
+  # 3. DEPLOY STAGE - Blue/Green deployment via SSH
+  # =========================================================
+  deploy:
+    name: Deploy to EC2 (Blue/Green)
+    runs-on: ubuntu-latest
+    needs: build
+    environment: production
+    timeout-minutes: 30
+    steps:
+      - name: Determine Target Environment
+        id: target
+        run: |
+          if [ -f /tmp/last_active_env ]; then
+            CURRENT=$(cat /tmp/last_active_env)
+          else
+            CURRENT="blue"
+          fi
+          if [ "$CURRENT" = "blue" ]; then
+            TARGET="green"
+          else
+            TARGET="blue"
+          fi
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+          echo "target=$TARGET" >> $GITHUB_OUTPUT
+          echo "::notice::Current active: $CURRENT, deploying to: $TARGET"
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
+
+      - name: Add EC2 to Known Hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.AWS_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Create Remote .env File
+        run: |
+          mkdir -p ./.deploy
+          cat > ./.deploy/.env <<EOF
+          ADMIN_EMAIL=${{ secrets.ADMIN_EMAIL }}
+          ADMIN_PASSWORD=${{ secrets.ADMIN_PASSWORD }}
+          MONGODB_URI=${{ secrets.MONGODB_URI }}
+          JWT_SECRET=${{ secrets.JWT_SECRET }}
+          NODE_ENV=${{ secrets.NODE_ENV }}
+          SERVER_PORT=${{ secrets.SERVER_PORT }}
+          DOCKER_IMAGE=${{ secrets.DOCKER_IMAGE }}
+          IMAGE_TAG=sha-${{ github.sha }}
+          FRONTEND_IMAGE=${{ env.FRONTEND_IMAGE }}
+          BACKEND_IMAGE=${{ env.BACKEND_IMAGE }}
+          EOF
+          chmod 600 ./.deploy/.env
+          echo "::notice::Env file prepared (secrets masked)"
+
+      - name: Copy Files to EC2
+        run: |
+          scp -o StrictHostKeyChecking=no -r ./.deploy/.env \
+            ${{ secrets.AWS_USER }}@${{ secrets.AWS_HOST }}:/tmp/deploy.env
+          scp -o StrictHostKeyChecking=no \
+            ./docker-compose.green.yml \
+            ${{ secrets.AWS_USER }}@${{ secrets.AWS_HOST }}:/tmp/ 2>/dev/null || true
+          scp -o StrictHostKeyChecking=no \
+            ./docker-compose.blue.yml \
+            ${{ secrets.AWS_USER }}@${{ secrets.AWS_HOST }}:/tmp/ 2>/dev/null || true
+
+      - name: Deploy Green Environment
+        id: deploy_green
+        uses: appleboy/ssh-action@v1
+        env:
+          DEPLOY_ENV: ${{ steps.target.outputs.target }}
+          IMAGE_TAG: sha-${{ github.sha }}
+          FRONTEND_IMAGE: ${{ env.FRONTEND_IMAGE }}
+          BACKEND_IMAGE: ${{ env.BACKEND_IMAGE }}
+        with:
+          host: ${{ secrets.AWS_HOST }}
+          username: ${{ secrets.AWS_USER }}
+          key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
+          command_timeout: 15m
+          script: |
+            set -e
+
+            # Move env file to deployment location
+            sudo mv /tmp/deploy.env /home/$USER/deploy/.env 2>/dev/null || mv /tmp/deploy.env /home/$USER/deploy/.env
+            chmod 600 /home/$USER/deploy/.env
+
+            # Move compose files if they exist
+            [ -f /tmp/docker-compose.green.yml ] && sudo mv /tmp/docker-compose.green.yml /home/$USER/deploy/ || true
+            [ -f /tmp/docker-compose.blue.yml ] && sudo mv /tmp/docker-compose.blue.yml /home/$USER/deploy/ || true
+
+            cd /home/$USER/deploy
+
+            # Export environment variables
+            set -a
+            source .env
+            set +a
+
+            # Login to Docker Hub on remote
+            echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+            # Pull the new images
+            echo "::group::Pulling Docker images"
+            docker pull $FRONTEND_IMAGE:$IMAGE_TAG
+            docker pull $BACKEND_IMAGE:$IMAGE_TAG
+            echo "::endgroup::"
+
+            # Stop and remove old GREEN/blue environment containers (whichever is target)
+            if [ "$DEPLOY_ENV" = "green" ]; then
+              docker compose -f docker-compose.green.yml down --remove-orphans || true
+              docker compose -f docker-compose.green.yml pull
+              docker compose -f docker-compose.green.yml up -d
+            else
+              docker compose -f docker-compose.blue.yml down --remove-orphans || true
+              docker compose -f docker-compose.blue.yml pull
+              docker compose -f docker-compose.blue.yml up -d
+            fi
+
+            echo "DEPLOY_ENV=$DEPLOY_ENV" > /home/$USER/deploy/.last_deploy
+            echo "$DEPLOY_ENV" > /home/$USER/deploy/.target_env
+
+      - name: Health Check on Target Environment
+        id: health
+        uses: appleboy/ssh-action@v1
+        env:
+          DEPLOY_ENV: ${{ steps.target.outputs.target }}
+        with:
+          host: ${{ secrets.AWS_HOST }}
+          username: ${{ secrets.AWS_USER }}
+          key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
+          command_timeout: 10m
+          script: |
+            set -e
+            DEPLOY_ENV="${{ steps.target.outputs.target }}"
+
+            if [ "$DEPLOY_ENV" = "green" ]; then
+              FRONTEND_URL="http://localhost:8081"
+              BACKEND_URL="http://localhost:5001/api/health"
+            else
+              FRONTEND_URL="http://localhost:8080"
+              BACKEND_URL="http://localhost:5000/api/health"
+            fi
+
+            echo "::group::Health checking $DEPLOY_ENV"
+            echo "Frontend URL: $FRONTEND_URL"
+            echo "Backend URL:  $BACKEND_URL"
+
+            # Wait up to 5 minutes
+            SUCCESS=0
+            for i in $(seq 1 30); do
+              echo "Attempt $i/30..."
+              FRONTEND_OK=$(curl -sf -o /dev/null -w "%{http_code}" "$FRONTEND_URL" || echo "000")
+              BACKEND_OK=$(curl -sf -o /dev/null -w "%{http_code}" "$BACKEND_URL" || echo "000")
+              BACKEND_BODY=$(curl -sf "$BACKEND_URL" || echo "")
+
+              echo "Frontend HTTP: $FRONTEND_OK | Backend HTTP: $BACKEND_OK"
+              echo "Backend body: $BACKEND_BODY"
+
+              if [ "$FRONTEND_OK" = "200" ] && [ "$BACKEND_OK" = "200" ] && echo "$BACKEND_BODY" | grep -qi "ok\|healthy\|success"; then
+                echo "✅ Health check PASSED"
+                SUCCESS=1
+                break
+              fi
+              sleep 10
+            done
+            echo "::endgroup::"
+
+            if [ $SUCCESS -ne 1 ]; then
+              echo "::error::Health check failed for $DEPLOY_ENV"
+              exit 1
+            fi
+            echo "HEALTHY=$DEPLOY_ENV" > /home/$USER/deploy/.health
+
+      - name: Ensure NGINX Config Exists (bootstrap on first deploy)
+        if: steps.health.outcome == 'success'
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.AWS_HOST }}
+          username: ${{ secrets.AWS_USER }}
+          key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
+          command_timeout: 5m
+          script: |
+            set -e
+            NGINX_CONF="/etc/nginx/sites-available/mern-app"
+
+            echo "::group::Ensuring NGINX site config exists"
+
+            if [ ! -f "$NGINX_CONF" ]; then
+              echo "::notice::NGINX config not found, bootstrapping at $NGINX_CONF"
+
+              sudo tee "$NGINX_CONF" > /dev/null <<'NGINX_EOF'
+            # MERN Blue/Green NGINX site
+            # Managed by GitHub Actions workflow — do not edit by hand.
+            # The deploy job rewrites the upstream ports via sed to switch blue <-> green.
+
+            upstream mern_frontend {
+                server 127.0.0.1:8080;  # Blue (default); switched to 8081 (green) by CI
+                keepalive 32;
+            }
+
+            upstream mern_backend {
+                server 127.0.0.1:5000;  # Blue (default); switched to 5001 (green) by CI
+                keepalive 32;
+            }
+
+            server {
+                listen 80 default_server;
+                listen [::]:80 default_server;
+                server_name _;
+
+                # Security headers
+                add_header X-Frame-Options "SAMEORIGIN" always;
+                add_header X-Content-Type-Options "nosniff" always;
+                add_header X-XSS-Protection "1; mode=block" always;
+                add_header Referrer-Policy "no-referrer-when-downgrade" always;
+                add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+                client_max_body_size 50M;
+
+                # Frontend
+                location / {
+                    proxy_pass http://mern_frontend;
+                    proxy_http_version 1.1;
+                    proxy_set_header Upgrade $http_upgrade;
+                    proxy_set_header Connection 'upgrade';
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                    proxy_cache_bypass $http_upgrade;
+                    proxy_read_timeout 90;
+                }
+
+                # Backend API
+                location /api/ {
+                    proxy_pass http://mern_backend/;
+                    proxy_http_version 1.1;
+                    proxy_set_header Upgrade $http_upgrade;
+                    proxy_set_header Connection 'upgrade';
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                    proxy_cache_bypass $http_upgrade;
+                    proxy_read_timeout 90;
+                }
+
+                # Local NGINX health probe
+                location /nginx-health {
+                    access_log off;
+                    return 200 "ok\n";
+                    add_header Content-Type text/plain;
+                }
+            }
+            NGINX_EOF
+
+              # Ensure the sites-enabled symlink exists
+              if [ ! -e /etc/nginx/sites-enabled/mern-app ]; then
+                sudo ln -sf /etc/nginx/sites-available/mern-app /etc/nginx/sites-enabled/mern-app
+                echo "::notice::Created sites-enabled symlink"
+              fi
+
+              # Optional: remove default site if present
+              if [ -e /etc/nginx/sites-enabled/default ]; then
+                sudo rm -f /etc/nginx/sites-enabled/default
+                echo "::notice::Removed default NGINX site"
+              fi
+
+              # Set sane perms so sed can run via sudo without complaint
+              sudo chmod 644 "$NGINX_CONF"
+            else
+              echo "::notice::NGINX config already present, leaving as-is"
+            fi
+            echo "::endgroup::"
+
+      - name: Switch NGINX Upstream (Blue → Green or Green → Blue)
+        if: steps.health.outcome == 'success'
+        uses: appleboy/ssh-action@v1
+        env:
+          TARGET: ${{ steps.target.outputs.target }}
+        with:
+          host: ${{ secrets.AWS_HOST }}
+          username: ${{ secrets.AWS_USER }}
+          key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
+          command_timeout: 5m
+          script: |
+            set -e
+            TARGET="${{ steps.target.outputs.target }}"
+
+            echo "::group::Switching NGINX upstream to $TARGET"
+            NGINX_CONF="/etc/nginx/sites-available/mern-app"
+
+            # Backup current config
+            sudo cp $NGINX_CONF $NGINX_CONF.bak 2>/dev/null || true
+
+            # Update upstream based on target
+            if [ "$TARGET" = "green" ]; then
+              sudo sed -i 's/server 127.0.0.1:8080;/server 127.0.0.1:8081;/g' $NGINX_CONF || true
+              sudo sed -i 's/server 127.0.0.1:5000;/server 127.0.0.1:5001;/g' $NGINX_CONF || true
+            else
+              sudo sed -i 's/server 127.0.0.1:8081;/server 127.0.0.1:8080;/g' $NGINX_CONF || true
+              sudo sed -i 's/server 127.0.0.1:5001;/server 127.0.0.1:5000;/g' $NGINX_CONF || true
+            fi
+
+            # Test and reload
+            sudo nginx -t
+            sudo nginx -s reload || sudo systemctl reload nginx
+            echo "::endgroup::"
+
+            # Mark stable in deploy metadata
+            echo "$TARGET" > /home/$USER/deploy/.active_env
+            echo "sha-${{ github.sha }}" > /home/$USER/deploy/.stable_tag
+
+      - name: Tag Stable Images (post-deploy)
+        if: steps.health.outcome == 'success'
+        run: |
+          echo "::notice::Tagging stable images sha-${{ github.sha }} as stable on Docker Hub"
+        # Note: Tag is finalized on EC2 via docker tag + push in next step
+
+      - name: Promote Stable Tag on EC2
+        if: steps.health.outcome == 'success'
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.AWS_HOST }}
+          username: ${{ secrets.AWS_USER }}
+          key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
+          command_timeout: 10m
+          script: |
+            set -e
+            cd /home/$USER/deploy
+            source .env
+
+            echo "::group::Promoting sha-${{ github.sha }} to stable"
+            echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+            docker pull $FRONTEND_IMAGE:sha-${{ github.sha }}
+            docker pull $BACKEND_IMAGE:sha-${{ github.sha }}
+
+            docker tag $FRONTEND_IMAGE:sha-${{ github.sha }} $FRONTEND_IMAGE:stable
+            docker tag $BACKEND_IMAGE:sha-${{ github.sha }} $BACKEND_IMAGE:stable
+
+            docker push $FRONTEND_IMAGE:stable
+            docker push $BACKEND_IMAGE:stable
+            echo "::endgroup::"
+
+            # Cleanup old images (keep last 5)
+            docker image prune -af --filter "until=168h" || true
+
+      - name: Deployment Summary
+        if: success()
+        run: |
+          echo "## ✅ Deployment Successful" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Target Environment:** ${{ steps.target.outputs.target }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image Tag:** sha-${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Frontend Image:** ${{ env.FRONTEND_IMAGE }}:stable" >> $GITHUB_STEP_SUMMARY
+          echo "- **Backend Image:** ${{ env.BACKEND_IMAGE }}:stable" >> $GITHUB_STEP_SUMMARY
+          echo "- **Rollback Available:** ${{ steps.target.outputs.current }} (previous)" >> $GITHUB_STEP_SUMMARY
+
+  # =========================================================
+  # 4. ROLLBACK STAGE - Automatic rollback on failure
+  # =========================================================
+  rollback:
+    name: Rollback to Previous Stable
+    runs-on: ubuntu-latest
+    needs: [build, deploy]
+    if: failure() && needs.deploy.result == 'failure'
+    environment: production
+    timeout-minutes: 20
+    steps:
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
+
+      - name: Add EC2 to Known Hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.AWS_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Ensure NGINX Config Exists (rollback bootstrap)
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.AWS_HOST }}
+          username: ${{ secrets.AWS_USER }}
+          key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
+          command_timeout: 5m
+          script: |
+            set -e
+            NGINX_CONF="/etc/nginx/sites-available/mern-app"
+
+            echo "::group::Ensuring NGINX site config exists (rollback)"
+
+            if [ ! -f "$NGINX_CONF" ]; then
+              echo "::notice::NGINX config not found during rollback, bootstrapping"
+
+              sudo tee "$NGINX_CONF" > /dev/null <<'NGINX_EOF'
+            # MERN Blue/Green NGINX site
+            # Managed by GitHub Actions workflow — do not edit by hand.
+
+            upstream mern_frontend {
+                server 127.0.0.1:8080;
+                keepalive 32;
+            }
+
+            upstream mern_backend {
+                server 127.0.0.1:5000;
+                keepalive 32;
+            }
+
+            server {
+                listen 80 default_server;
+                listen [::]:80 default_server;
+                server_name _;
+
+                add_header X-Frame-Options "SAMEORIGIN" always;
+                add_header X-Content-Type-Options "nosniff" always;
+                add_header X-XSS-Protection "1; mode=block" always;
+                add_header Referrer-Policy "no-referrer-when-downgrade" always;
+                add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+                client_max_body_size 50M;
+
+                location / {
+                    proxy_pass http://mern_frontend;
+                    proxy_http_version 1.1;
+                    proxy_set_header Upgrade $http_upgrade;
+                    proxy_set_header Connection 'upgrade';
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                    proxy_cache_bypass $http_upgrade;
+                    proxy_read_timeout 90;
+                }
+
+                location /api/ {
+                    proxy_pass http://mern_backend/;
+                    proxy_http_version 1.1;
+                    proxy_set_header Upgrade $http_upgrade;
+                    proxy_set_header Connection 'upgrade';
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                    proxy_cache_bypass $http_upgrade;
+                    proxy_read_timeout 90;
+                }
+
+                location /nginx-health {
+                    access_log off;
+                    return 200 "ok\n";
+                    add_header Content-Type text/plain;
+                }
+            }
+            NGINX_EOF
+
+              [ -e /etc/nginx/sites-enabled/mern-app ] || sudo ln -sf /etc/nginx/sites-available/mern-app /etc/nginx/sites-enabled/mern-app
+              [ -e /etc/nginx/sites-enabled/default ] && sudo rm -f /etc/nginx/sites-enabled/default || true
+              sudo chmod 644 "$NGINX_CONF"
+            else
+              echo "::notice::NGINX config already present, leaving as-is"
+            fi
+            echo "::endgroup::"
+
+      - name: Execute Rollback
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.AWS_HOST }}
+          username: ${{ secrets.AWS_USER }}
+          key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
+          command_timeout: 15m
+          script: |
+            set -e
+            cd /home/$USER/deploy
+            source .env
+
+            echo "::group::Initiating ROLLBACK"
+
+            # Determine the active env (the one currently serving traffic)
+            ACTIVE=$(cat /home/$USER/deploy/.active_env 2>/dev/null || echo "blue")
+            if [ "$ACTIVE" = "blue" ]; then
+              ROLLBACK_TO="green"
+            else
+              ROLLBACK_TO="blue"
+            fi
+            echo "Active before rollback: $ACTIVE, will restore: $ROLLBACK_TO"
+
+            # Get last stable tag
+            STABLE_TAG=$(cat /home/$USER/deploy/.stable_tag 2>/dev/null || echo "")
+            if [ -z "$STABLE_TAG" ]; then
+              STABLE_TAG="stable"
+            fi
+            echo "Restoring tag: $STABLE_TAG"
+
+            echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+            # Pull stable images
+            docker pull $FRONTEND_IMAGE:$STABLE_TAG
+            docker pull $BACKEND_IMAGE:$STABLE_TAG
+
+            # Restart stable containers in the rollback env
+            if [ "$ROLLBACK_TO" = "green" ]; then
+              docker compose -f docker-compose.green.yml down || true
+              FRONTEND_IMAGE=$FRONTEND_IMAGE BACKEND_IMAGE=$BACKEND_IMAGE IMAGE_TAG=$STABLE_TAG \
+                docker compose -f docker-compose.green.yml up -d
+            else
+              docker compose -f docker-compose.blue.yml down || true
+              FRONTEND_IMAGE=$FRONTEND_IMAGE BACKEND_IMAGE=$BACKEND_IMAGE IMAGE_TAG=$STABLE_TAG \
+                docker compose -f docker-compose.blue.yml up -d
+            fi
+
+            # Wait for healthy
+            sleep 20
+            if [ "$ROLLBACK_TO" = "green" ]; then
+              ROLLBACK_URL="http://localhost:5001/api/health"
+            else
+              ROLLBACK_URL="http://localhost:5000/api/health"
+            fi
+
+            ROLLBACK_OK=0
+            for i in $(seq 1 20); do
+              STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "$ROLLBACK_URL" || echo "000")
+              if [ "$STATUS" = "200" ]; then
+                ROLLBACK_OK=1
+                break
+              fi
+              sleep 5
+            done
+
+            if [ $ROLLBACK_OK -ne 1 ]; then
+              echo "::error::Rollback health check failed"
+              exit 1
+            fi
+
+            # Switch NGINX back to ROLLBACK env
+            NGINX_CONF="/etc/nginx/sites-available/mern-app"
+            if [ "$ROLLBACK_TO" = "green" ]; then
+              sudo sed -i 's/server 127.0.0.1:8080;/server 127.0.0.1:8081;/g' $NGINX_CONF
+              sudo sed -i 's/server 127.0.0.1:5000;/server 127.0.0.1:5001;/g' $NGINX_CONF
+            else
+              sudo sed -i 's/server 127.0.0.1:8081;/server 127.0.0.1:8080;/g' $NGINX_CONF
+              sudo sed -i 's/server 127.0.0.1:5001;/server 127.0.0.1:5000;/g' $NGINX_CONF
+            fi
+            sudo nginx -t
+            sudo nginx -s reload || sudo systemctl reload nginx
+
+            echo "$ROLLBACK_TO" > /home/$USER/deploy/.active_env
+            echo "::endgroup::"
+            echo "::notice::Rollback to $ROLLBACK_TO completed successfully"
+
+      - name: Rollback Summary
+        if: always()
+        run: |
+          echo "## ⚠️ ROLLBACK EXECUTED" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Deployment failed. System has been rolled back to the last known stable state." >> $GITHUB_STEP_SUMMARY
+          echo "- Previous deployment: sha-${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Active environment restored to previous stable" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Please check the logs and fix the issue before redeploying." >> $GITHUB_STEP_SUMMARY
