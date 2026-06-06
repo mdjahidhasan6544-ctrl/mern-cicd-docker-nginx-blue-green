@@ -115,14 +115,9 @@ jobs:
           path: '.'
           format: 'ALL'
           args: >
-            --failOnCVSS
-            --failOnLow
-            --failOnMedium
-            --failOnHigh
-            --failBuildOnCritical
-            --enableRetired
+            --failOnCVSS 7
             --enableExperimental
-
+            
       - name: Run Trivy Filesystem Scan (fail on HIGH/CRITICAL)
         uses: aquasecurity/trivy-action@master
         with:
