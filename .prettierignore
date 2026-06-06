@@ -1,0 +1,29 @@
+# Build outputs
+node_modules/
+dist/
+build/
+coverage/
+
+# Generated files
+package-lock.json
+*.min.js
+*.min.css
+
+# Logs
+*.log
+logs/
+
+# Env files (don't reformat secrets)
+.env
+.env.*
+!.env.example
+
+# CI / Docker
+.github/workflows/*.yml
+Dockerfile
+docker-compose*.yml
+
+# Cache
+.vite/
+.cache/
+.tmp/

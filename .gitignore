@@ -102,6 +102,12 @@ tmp/
 temp/
 .tmp/
 
+# ── 9a. HUSKY (local-only) ───────────────────────────────────────────────────
+# Only track the hook source files (commit-msg, pre-commit), not the
+# internal _/ directory Husky uses for shim management.
+.husky/_/
+.husky/.gitignore
+
 # ── 10. DOCKER (LOCAL OVERRIDES) ─────────────────────────────────────────────
 docker-compose.override.yml
 docker-compose.local.yml

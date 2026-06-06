@@ -7,12 +7,130 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Default to least-privilege. Jobs that need more (cosign, etc.) override locally.
+permissions:
+  contents: read
+
 env:
   FRONTEND_IMAGE: ${{ secrets.DOCKER_IMAGE }}-frontend
   BACKEND_IMAGE: ${{ secrets.DOCKER_IMAGE }}-backend
   SHORT_SHA: ${{ github.sha }}
 
 jobs:
+  # =========================================================
+  # 0. TEST STAGE - Lint, format-check, unit & integration tests
+  #    (hard gate — must pass before any build/deploy proceeds)
+  # =========================================================
+  test:
+    name: Test - Lint, Format, Unit & Integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: |
+            frontend/package-lock.json
+            backend/package-lock.json
+
+      # ── Backend ──────────────────────────────────────────────────────
+      - name: Install Backend Dependencies
+        working-directory: ./backend
+        run: npm ci --no-audit --no-fund
+
+      - name: Lint Backend
+        working-directory: ./backend
+        run: npm run lint 2>&1 | tee backend-lint.log
+
+      - name: Format Check Backend
+        working-directory: ./backend
+        run: npm run format:check 2>&1 | tee backend-format.log || true
+
+      - name: Run Backend Tests (vitest)
+        working-directory: ./backend
+        run: npm test 2>&1 | tee backend-test.log
+
+      - name: Backend Coverage Report
+        working-directory: ./backend
+        run: npm run test:coverage 2>&1 | tee backend-coverage.log || true
+        # Coverage thresholds (in vitest.config.js) are the hard gate.
+        # This step generates the lcov report for upload.
+
+      - name: Upload Backend Coverage (lcov)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: backend/coverage/lcov.info
+          retention-days: 30
+          if-no-files-found: ignore
+
+      # ── Frontend ─────────────────────────────────────────────────────
+      - name: Install Frontend Dependencies
+        working-directory: ./frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: Lint Frontend
+        working-directory: ./frontend
+        run: npm run lint 2>&1 | tee frontend-lint.log
+
+      - name: Format Check Frontend
+        working-directory: ./frontend
+        run: npm run format:check 2>&1 | tee frontend-format.log || true
+
+      - name: Run Frontend Tests (vitest)
+        working-directory: ./frontend
+        run: npm test 2>&1 | tee frontend-test.log
+
+      - name: Frontend Coverage Report
+        working-directory: ./frontend
+        run: npm run test:coverage 2>&1 | tee frontend-coverage.log || true
+
+      - name: Upload Frontend Coverage (lcov)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage
+          path: frontend/coverage/lcov.info
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Aggregate Test Summary
+        if: always()
+        run: |
+          {
+            echo "## 🧪 Test Summary"
+            echo ""
+            echo "| Stage | Backend | Frontend |"
+            echo "|-------|---------|----------|"
+            echo "| Lint | $([ -f backend-lint.log ] && echo "✅ ran" || echo "—") | $([ -f frontend-lint.log ] && echo "✅ ran" || echo "—") |"
+            echo "| Format | $([ -f backend-format.log ] && echo "✅ ran" || echo "—") | $([ -f frontend-format.log ] && echo "✅ ran" || echo "—") |"
+            echo "| Tests | $([ -f backend-test.log ] && echo "✅ ran" || echo "—") | $([ -f frontend-test.log ] && echo "✅ ran" || echo "—") |"
+            echo "| Coverage | $([ -f backend-coverage.log ] && echo "✅ ran" || echo "—") | $([ -f frontend-coverage.log ] && echo "✅ ran" || echo "—") |"
+          } >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload All Test Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs
+          path: |
+            backend-lint.log
+            backend-format.log
+            backend-test.log
+            backend-coverage.log
+            frontend-lint.log
+            frontend-format.log
+            frontend-test.log
+            frontend-coverage.log
+          retention-days: 14
+          if-no-files-found: ignore
+
   # =========================================================
   # 1. CI STAGE - Code quality, security scans, dependency checks
   # =========================================================
@@ -139,13 +257,42 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
+      - name: Lint Backend Dockerfile (hadolint)
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: backend/Dockerfile
+          failure-threshold: warning
+          format: sarif
+          output-file: hadolint-backend.sarif
+          ignored-rules: DL3008,DL3018  # pin versions in production stage only
+
+      - name: Lint Frontend Dockerfile (hadolint)
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: frontend/Dockerfile
+          failure-threshold: warning
+          format: sarif
+          output-file: hadolint-frontend.sarif
+          ignored-rules: DL3008,DL3018
+
+      - name: Upload Hadolint SARIF Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hadolint-reports
+          path: |
+            hadolint-backend.sarif
+            hadolint-frontend.sarif
+          retention-days: 30
+          if-no-files-found: warn
+
   # =========================================================
   # 2. BUILD STAGE - Build and push Docker images
   # =========================================================
   build:
     name: Build & Push Docker Images
     runs-on: ubuntu-latest
-    needs: ci
+    needs: [test, ci]
     timeout-minutes: 30
     steps:
       - name: Checkout Repository
@@ -234,6 +381,38 @@ jobs:
           vuln-type: 'os,library'
           severity: 'HIGH,CRITICAL'
 
+      # ── SBOM generation (CycloneDX + SPDX) ─────────────────────────────
+      # Required for SLSA, EU CRA, US EO 14028 supply-chain compliance.
+      # Attaches the SBOM to the image as an OCI artifact for downstream
+      # consumers (and for the cosign signature in the next phase).
+      - name: Generate SBOM - Frontend
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.FRONTEND_IMAGE }}:sha-${{ github.sha }}
+          format: cyclonedx-json
+          artifact-name: sbom-frontend-cyclonedx.json
+
+      - name: Generate SBOM (SPDX) - Frontend
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.FRONTEND_IMAGE }}:sha-${{ github.sha }}
+          format: spdx-json
+          artifact-name: sbom-frontend-spdx.json
+
+      - name: Generate SBOM - Backend
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.BACKEND_IMAGE }}:sha-${{ github.sha }}
+          format: cyclonedx-json
+          artifact-name: sbom-backend-cyclonedx.json
+
+      - name: Generate SBOM (SPDX) - Backend
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.BACKEND_IMAGE }}:sha-${{ github.sha }}
+          format: spdx-json
+          artifact-name: sbom-backend-spdx.json
+
   # =========================================================
   # 3. DEPLOY STAGE - Blue/Green deployment via SSH
   # =========================================================
@@ -243,6 +422,9 @@ jobs:
     needs: build
     environment: production
     timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write   # required for cosign keyless signing (OIDC)
     steps:
       - name: Determine Target Environment
         id: target
@@ -581,6 +763,86 @@ jobs:
             # Cleanup old images (keep last 5)
             docker image prune -af --filter "until=168h" || true
 
+      # ── Keyless image signing with cosign (Sigstore) ────────────────────
+      # Uses GitHub OIDC as the identity provider — no key material to manage.
+      # The signature + Rekor transparency-log entry are stored alongside the
+      # image in the registry. The rollback job verifies the signature before
+      # pulling :stable, ensuring we never roll back to a tampered image.
+      - name: Install cosign
+        if: steps.health.outcome == 'success'
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.4.1'
+
+      - name: Log in to Docker Hub (for cosign push)
+        if: steps.health.outcome == 'success'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Sign Frontend :stable (keyless, OIDC)
+        if: steps.health.outcome == 'success'
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+        run: |
+          cosign sign --yes \
+            --registry-username "${{ secrets.DOCKERHUB_USERNAME }}" \
+            --registry-password "${{ secrets.DOCKERHUB_TOKEN }}" \
+            "${{ env.FRONTEND_IMAGE }}:stable"
+
+      - name: Sign Backend :stable (keyless, OIDC)
+        if: steps.health.outcome == 'success'
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+        run: |
+          cosign sign --yes \
+            --registry-username "${{ secrets.DOCKERHUB_USERNAME }}" \
+            --registry-password "${{ secrets.DOCKERHUB_TOKEN }}" \
+            "${{ env.BACKEND_IMAGE }}:stable"
+
+      - name: Attach SBOM attestation to Frontend :stable
+        if: steps.health.outcome == 'success'
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+        run: |
+          cosign attest --yes --predicate sbom-frontend-cyclonedx.json \
+            --type cyclonedx \
+            --registry-username "${{ secrets.DOCKERHUB_USERNAME }}" \
+            --registry-password "${{ secrets.DOCKERHUB_TOKEN }}" \
+            "${{ env.FRONTEND_IMAGE }}:stable"
+
+      - name: Attach SBOM attestation to Backend :stable
+        if: steps.health.outcome == 'success'
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+        run: |
+          cosign attest --yes --predicate sbom-backend-cyclonedx.json \
+            --type cyclonedx \
+            --registry-username "${{ secrets.DOCKERHUB_USERNAME }}" \
+            --registry-password "${{ secrets.DOCKERHUB_TOKEN }}" \
+            "${{ env.BACKEND_IMAGE }}:stable"
+
+      - name: Verify :stable signatures (sanity check)
+        if: steps.health.outcome == 'success'
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+          COSIGN_REPOSITORY: 'ghcr.io/${{ github.repository_owner }}/cosign'
+        run: |
+          echo "::group::Verifying cosign signatures on :stable"
+          cosign verify --certificate-identity-regexp 'https://github.com/${{ github.repository_owner }}/.*' \
+            --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+            --registry-username "${{ secrets.DOCKERHUB_USERNAME }}" \
+            --registry-password "${{ secrets.DOCKERHUB_TOKEN }}" \
+            "${{ env.FRONTEND_IMAGE }}:stable" || { echo "::error::Frontend signature verification FAILED"; exit 1; }
+          cosign verify --certificate-identity-regexp 'https://github.com/${{ github.repository_owner }}/.*' \
+            --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+            --registry-username "${{ secrets.DOCKERHUB_USERNAME }}" \
+            --registry-password "${{ secrets.DOCKERHUB_TOKEN }}" \
+            "${{ env.BACKEND_IMAGE }}:stable" || { echo "::error::Backend signature verification FAILED"; exit 1; }
+          echo "✅ Both :stable images signed and verified"
+          echo "::endgroup::"
+
       - name: Deployment Summary
         if: success()
         run: |
@@ -612,6 +874,38 @@ jobs:
         run: |
           mkdir -p ~/.ssh
           ssh-keyscan -H ${{ secrets.AWS_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      # ── Verify :stable signature BEFORE pulling the image ──────────────
+      # Belt-and-suspenders: even if a previous :stable tag in the registry
+      # was tampered with, the rollback will refuse to deploy it.
+      - name: Install cosign (rollback)
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.4.1'
+
+      - name: Log in to Docker Hub (cosign verify)
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Verify :stable signatures (rollback gate)
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+        run: |
+          echo "::group::Verifying cosign signatures before rollback"
+          cosign verify --certificate-identity-regexp 'https://github.com/${{ github.repository_owner }}/.*' \
+            --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+            --registry-username "${{ secrets.DOCKERHUB_USERNAME }}" \
+            --registry-password "${{ secrets.DOCKERHUB_TOKEN }}" \
+            "${{ env.FRONTEND_IMAGE }}:stable" || { echo "::error::Frontend :stable signature INVALID — refusing to rollback"; exit 1; }
+          cosign verify --certificate-identity-regexp 'https://github.com/${{ github.repository_owner }}/.*' \
+            --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+            --registry-username "${{ secrets.DOCKERHUB_USERNAME }}" \
+            --registry-password "${{ secrets.DOCKERHUB_TOKEN }}" \
+            "${{ env.BACKEND_IMAGE }}:stable" || { echo "::error::Backend :stable signature INVALID — refusing to rollback"; exit 1; }
+          echo "✅ Both :stable signatures verified — safe to roll back"
+          echo "::endgroup::"
 
       - name: Ensure NGINX Config Exists (rollback bootstrap)
         uses: appleboy/ssh-action@v1

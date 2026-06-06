@@ -107,9 +107,9 @@ export default function AdminStudents() {
               </div>
 
               {/* Action Segment / Status Controller */}
-              <div className="state-panel stack" style={{ padding: '1rem', background: 'rgba(255,255,255,0.03)', borderRadius: '16px', border: '1px solid rgba(255,255,255,0.05)' }}>
-                <div className="button-row" style={{ justifyContent: 'space-between', width: '100%' }}>
-                  <div className="stack" style={{ gap: '0.25rem' }}>
+              <div className="state-panel stack" style={{ padding: "1rem", background: "rgba(255,255,255,0.03)", borderRadius: "16px", border: "1px solid rgba(255,255,255,0.05)" }}>
+                <div className="button-row" style={{ justifyContent: "space-between", width: "100%" }}>
+                  <div className="stack" style={{ gap: "0.25rem" }}>
                     <p className="eyebrow" style={{ marginBottom: 0 }}>Current Status</p>
                     <div className="button-row">
                       <span className={`pill ${getStatusTone(student.approvalStatus)}`}>
@@ -123,21 +123,21 @@ export default function AdminStudents() {
 
                   <div className="button-row">
                     {confirming.id === student.id ? (
-                      <div className="button-row" style={{ background: 'rgba(239, 68, 68, 0.1)', padding: '0.5rem 1rem', borderRadius: '12px', border: '1px solid rgba(239, 68, 68, 0.2)' }}>
-                        <span style={{ fontSize: '0.9rem', color: '#fca5a5' }}>{confirming.message}</span>
-                        <button className="button button-danger" style={{ minHeight: '2rem', padding: '0 0.75rem' }} onClick={executeAction}>Confirm</button>
-                        <button className="button button-secondary" style={{ minHeight: '2rem', padding: '0 0.75rem' }} onClick={cancelAction}>Cancel</button>
+                      <div className="button-row" style={{ background: "rgba(239, 68, 68, 0.1)", padding: "0.5rem 1rem", borderRadius: "12px", border: "1px solid rgba(239, 68, 68, 0.2)" }}>
+                        <span style={{ fontSize: "0.9rem", color: "#fca5a5" }}>{confirming.message}</span>
+                        <button className="button button-danger" style={{ minHeight: "2rem", padding: "0 0.75rem" }} onClick={executeAction}>Confirm</button>
+                        <button className="button button-secondary" style={{ minHeight: "2rem", padding: "0 0.75rem" }} onClick={cancelAction}>Cancel</button>
                       </div>
                     ) : (
                       <>
-                        <div className="button-group" style={{ display: 'flex', gap: '0.5rem' }}>
+                        <div className="button-group" style={{ display: "flex", gap: "0.5rem" }}>
                           <button
-                            className={`button ${isApproved ? 'button-secondary' : 'button-primary'}`}
+                            className={`button ${isApproved ? "button-secondary" : "button-primary"}`}
                             disabled={busyId === student.id}
                             onClick={() =>
                               isApproved 
-                                ? requestAction(student, 'pending', { isVerifiedStudent: false, status: "pending" }, `Revoke access for ${student.name}?`)
-                                : requestAction(student, 'approve', { isVerifiedStudent: true, status: "active" }, `Approve ${student.name}?`)
+                                ? requestAction(student, "pending", { isVerifiedStudent: false, status: "pending" }, `Revoke access for ${student.name}?`)
+                                : requestAction(student, "approve", { isVerifiedStudent: true, status: "active" }, `Approve ${student.name}?`)
                             }
                             type="button"
                           >
@@ -148,7 +148,7 @@ export default function AdminStudents() {
                             <button
                               className="button button-secondary"
                               disabled={busyId === student.id}
-                              onClick={() => requestAction(student, 'unban', { status: student.isVerifiedStudent ? "active" : "pending" }, `Unban ${student.name}?`)}
+                              onClick={() => requestAction(student, "unban", { status: student.isVerifiedStudent ? "active" : "pending" }, `Unban ${student.name}?`)}
                               type="button"
                             >
                               Unban
@@ -157,7 +157,7 @@ export default function AdminStudents() {
                             <button
                               className="button button-danger"
                               disabled={busyId === student.id}
-                              onClick={() => requestAction(student, 'ban', { status: "banned" }, `Ban ${student.name}?`)}
+                              onClick={() => requestAction(student, "ban", { status: "banned" }, `Ban ${student.name}?`)}
                               type="button"
                             >
                               Ban
@@ -165,11 +165,11 @@ export default function AdminStudents() {
                           )}
                         </div>
 
-                        <div className="button-group" style={{ display: 'flex', gap: '0.5rem', borderLeft: '1px solid var(--line)', paddingLeft: '0.5rem' }}>
+                        <div className="button-group" style={{ display: "flex", gap: "0.5rem", borderLeft: "1px solid var(--line)", paddingLeft: "0.5rem" }}>
                           <button
                             className="button button-secondary"
                             disabled={busyId === student.id}
-                            onClick={() => requestAction(student, 'reset_devices', { resetDevices: true }, `Reset all devices for ${student.name}?`)}
+                            onClick={() => requestAction(student, "reset_devices", { resetDevices: true }, `Reset all devices for ${student.name}?`)}
                             type="button"
                             title="Reset Devices"
                           >
@@ -179,7 +179,7 @@ export default function AdminStudents() {
                           <button
                             className="button button-danger"
                             disabled={busyId === student.id}
-                            onClick={() => requestAction(student, 'full_reset', { status: "pending", isVerifiedStudent: false, resetDevices: true }, `Perform Full Reset for ${student.name}?`)}
+                            onClick={() => requestAction(student, "full_reset", { status: "pending", isVerifiedStudent: false, resetDevices: true }, `Perform Full Reset for ${student.name}?`)}
                             type="button"
                             title="Full Account Reset"
                           >

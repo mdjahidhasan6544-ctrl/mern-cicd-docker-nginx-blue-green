@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+# Conventional Commits enforcement — runs on every `git commit`.
+# Pairs with /commitlint.config.js at the repo root.
+. "$(dirname -- "$0")/_/husky.sh"
+
+# Walk up to repo root for the shared commitlint config
+cd "$(git rev-parse --show-toplevel)"
+
+npx --no-install commitlint --edit "$1"

@@ -1,11 +1,74 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Frontend .dockerignore — prevents sensitive / build-irrelevant files
+#  from being sent to the Docker daemon or baked into image layers.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── Node / npm ──────────────────────────────────────────────────────────────
 node_modules
-dist
-.env*
-!.env.example
-*.log
 npm-debug.log*
-.DS_Store
-Thumbs.db
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.npm
+.pnpm-store
+.yarn
+
+# ── Secrets / env (NEVER bake into images) ──────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.jks
+
+# ── Build artifacts (rebuilt inside the image) ──────────────────────────────
+dist
+build
+coverage
+.nyc_output
+*.lcov
+test-results
+.vite
+
+# ── VCS / CI ────────────────────────────────────────────────────────────────
 .git
 .gitignore
+.github
+.gitattributes
+
+# ── IDE / editor ────────────────────────────────────────────────────────────
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Logs / temp ─────────────────────────────────────────────────────────────
+*.log
+logs
+tmp
+temp
+.tmp
+.cache
+
+# ── Tests / docs ────────────────────────────────────────────────────────────
+**/*.test.js
+**/*.test.jsx
+**/*.test.ts
+**/*.test.tsx
+**/*.spec.*
+**/__tests__/**
+**/__mocks__/**
 README.md
+CLAUDE.md
+LICENSE
+.eslintrc*
+.prettierrc*
+.editorconfig
+*.md

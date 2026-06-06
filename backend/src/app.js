@@ -7,6 +7,7 @@ import morgan from "morgan";
 
 import { connectDB } from "./config/db.js";
 import { errorHandler } from "./middleware/errorHandler.js";
+import { apiLimiter } from "./middleware/rateLimiter.js";
 import adminRoutes from "./routes/admin.js";
 import authRoutes from "./routes/auth.js";
 import studentRoutes from "./routes/student.js";
@@ -88,6 +89,10 @@ app.get("/api/health", (req, res) => {
     message: "API is healthy"
   });
 });
+
+// Apply general API rate limiting to all /api/* routes (after health check
+// so liveness probes are never throttled).
+app.use("/api/", apiLimiter);
 
 app.use("/api/auth", authRoutes);
 app.use("/api/admin", adminRoutes);
