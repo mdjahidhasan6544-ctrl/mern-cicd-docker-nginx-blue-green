@@ -3,7 +3,7 @@
 # packages (busybox, musl, openssl, libxml2, sqlite-libs, etc.) are at their
 # latest patched versions. This is what clears the HIGH/CRITICAL Trivy findings
 # on the base image.
-FROM node:22.11.0-alpine3.22 AS base
+FROM node:22.12.0-alpine3.21 AS base
 WORKDIR /app
 
 # Upgrade all OS packages, then install dumb-init for proper signal handling.

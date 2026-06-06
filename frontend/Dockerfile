@@ -3,7 +3,7 @@
 # packages inside the image are at their latest patched versions. This is what
 # clears the HIGH/CRITICAL Trivy findings on busybox, musl, openssl, libxml2,
 # sqlite-libs, etc.
-FROM node:22.11.0-alpine3.22 AS base
+FROM node:22.12.0-alpine3.21 AS base
 WORKDIR /app
 
 RUN apk upgrade --no-cache \
@@ -43,9 +43,9 @@ ENV VITE_API_URL=$VITE_API_URL
 RUN npm run build
 
 # ─── Stage 5: Production (Nginx) ──────────────────────────────────────────────
-# Pin nginx to a specific Alpine 3.22 tag and `apk upgrade` so the OS packages
+# Pin nginx to a specific Alpine 3.21 tag and `apk upgrade` so the OS packages
 # (pcre2, libxml2, openssl, busybox) shipped with the image are patched.
-FROM nginx:1.27.5-alpine3.22 AS production
+FROM nginx:1.27.5-alpine3.21 AS production
 
 # Patch OS-level CVEs (pcre2, libxml2, openssl, busybox) flagged by Trivy.
 RUN apk upgrade --no-cache

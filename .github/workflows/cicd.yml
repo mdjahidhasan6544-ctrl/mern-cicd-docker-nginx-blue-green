@@ -106,22 +106,31 @@ jobs:
             -Dsonar.host.url=${{ secrets.SONAR_HOST_URL }}
             -Dsonar.login=${{ secrets.SONAR_TOKEN }}
 
+      - name: Run OWASP Dependency-Check (fail on CRITICAL)
+        uses: dependency-check/Dependency-Check_Action@main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          project: 'mern-app'
+          path: '.'
+          format: 'ALL'
+          args: '--failBuildOnCVSS 9'
+
       - name: Run npm audit (frontend)
         working-directory: ./frontend
-        run: npm audit --omit=dev --audit-level=high || true
+        run: npm audit --omit=dev --audit-level=high
 
       - name: Run npm audit (backend)
         working-directory: ./backend
-        run: npm audit --omit=dev --audit-level=high || true
+        run: npm audit --omit=dev --audit-level=high
 
-      - name: Run Trivy Filesystem Scan (report only)
+      - name: Run Trivy Filesystem Scan (fail on HIGH/CRITICAL)
         uses: aquasecurity/trivy-action@master
-        continue-on-error: true
         with:
           scan-type: 'fs'
           scan-ref: '.'
           format: 'table'
-          exit-code: '0'
+          exit-code: '1'
           ignore-unfixed: true
           vuln-type: 'os,library'
           severity: 'HIGH,CRITICAL'
