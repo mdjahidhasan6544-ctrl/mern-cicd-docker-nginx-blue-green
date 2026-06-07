@@ -47,7 +47,7 @@ ENV VITE_API_URL=$VITE_API_URL
 RUN npm run build
 
 # ─── Stage 5: Production (Nginx) ──────────────────────────────────────────────
-FROM nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10 AS production
+FROM nginx:1.31-alpine@sha256:8b1e78743a03dbb2c95171cc58639fef29abc8816598e27fb910ed2e621e589a AS production
 
 # Upgrade all OS packages to latest patched versions to clear Trivy CVEs
 RUN apk upgrade --no-cache
