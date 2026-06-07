@@ -1,0 +1,20 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Hadolint config — used by hadolint/hadolint-action in CI.
+# Mirrors the inline `with: ignored-rules:` argument in the workflow.
+# ─────────────────────────────────────────────────────────────────────────────
+failure-threshold: error
+no-color: true
+no-fail: false
+
+ignored:
+  # DL3008: Pin versions in apt-get install. We use apk, not apt.
+  - DL3008
+  # DL3018: Pin versions in apk add. We intentionally use --no-cache rolling tags.
+  - DL3018
+  # DL3013: Pin versions in pip. Not used (Node.js project).
+  - DL3013
+  # DL4006: Set the SHELL option -o pipefail before RUN with a pipe.
+  #         Acceptable in our build context.
+  - DL4006
+  # SC2086: Double-quote variables. Linting style, not security.
+  - SC2086

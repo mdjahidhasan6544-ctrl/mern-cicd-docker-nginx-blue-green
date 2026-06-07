@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  OWASP Dependency-Check suppressions file.
+
+  Use this file to whitelist specific CVEs that have been triaged and accepted
+  as false positives or out-of-scope risk. Each <suppress> entry MUST include
+  a justification in the <notes> field and a review date.
+
+  Example:
+    <suppress>
+      <filePath regex="true">.*node_modules.*lodash.*</filePath>
+      <cve>CVE-2021-23337</cve>
+      <notes>Command injection only affects template strings we don't use. Tracked in JIRA-1234.</notes>
+      <expired>false</expired>
+      <expiredOn>2026-12-31</expiredOn>
+    </suppress>
+
+  Keep this file under source control. CI will fail (exit 1) if --failOnCVSS 9
+  flags anything not suppressed here.
+-->
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+  <!-- Intentionally empty. Add suppressions as needed. -->
+</suppressions>

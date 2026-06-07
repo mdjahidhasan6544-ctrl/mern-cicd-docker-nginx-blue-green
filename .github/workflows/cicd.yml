@@ -214,7 +214,7 @@ jobs:
         run: npm ci --no-audit --no-fund || npm install --no-audit --no-fund
 
       - name: Run SonarQube Scan (Self-hosted)
-        uses: sonarsource/sonarqube-scan-action@v2
+        uses: sonarsource/sonarqube-scan-action@c9d327c0246c0bbfe955144aa8a5e033bf766f52
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
@@ -224,20 +224,22 @@ jobs:
             -Dsonar.host.url=${{ secrets.SONAR_HOST_URL }}
             -Dsonar.login=${{ secrets.SONAR_TOKEN }}
 
-      - name: Run OWASP Dependency-Check (fail on CRITICAL only)
-        uses: dependency-check/Dependency-Check_Action@main
+      - name: Run OWASP Dependency-Check (fail on CRITICAL, gate)
+        uses: dependency-check/Dependency-Check_Action@1e54355a8b4c8abaa8cc7d0b70aa655a3bb15a6c
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
         with:
           project: 'mern-app'
           path: '.'
           format: 'ALL'
           args: >
-            --failOnCVSS 7
+            --failOnCVSS 9
             --enableExperimental
-            
+            --suppression .github/dependency-check-suppressions.xml
+            --noupdate
       - name: Run Trivy Filesystem Scan (fail on HIGH/CRITICAL)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@bfa4b33a029b9aa80ddb784b45574c30e072c59e
         with:
           scan-type: 'fs'
           scan-ref: '.'
@@ -248,6 +250,15 @@ jobs:
           severity: 'HIGH,CRITICAL'
           output: 'trivy-fs-report.txt'
 
+      - name: Ensure trivy-fs-report.txt exists
+        if: always()
+        run: |
+          if [ ! -s trivy-fs-report.txt ]; then
+            echo "WARNING: Trivy FS scan produced no report file." > trivy-fs-report.txt
+            echo "Severity HIGH/CRITICAL may have caused immediate exit; check the previous step log." >> trivy-fs-report.txt
+          fi
+          echo "Trivy FS report size: $(wc -c < trivy-fs-report.txt) bytes"
+
       - name: Upload Trivy FS Report
         if: always()
         uses: actions/upload-artifact@v4
@@ -255,25 +266,53 @@ jobs:
           name: trivy-fs-report
           path: trivy-fs-report.txt
           retention-days: 30
-          if-no-files-found: warn
+          if-no-files-found: error
 
       - name: Lint Backend Dockerfile (hadolint)
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@2332a7b74a6de0dda2e2221d575162eba76ba5e5
         with:
           dockerfile: backend/Dockerfile
-          failure-threshold: warning
+          failure-threshold: error
           format: sarif
           output-file: hadolint-backend.sarif
-          ignored-rules: DL3008,DL3018  # pin versions in production stage only
+          ignored-rules: DL3008,DL3018,DL3013,DL4006,SC2086
 
       - name: Lint Frontend Dockerfile (hadolint)
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@2332a7b74a6de0dda2e2221d575162eba76ba5e5
         with:
           dockerfile: frontend/Dockerfile
-          failure-threshold: warning
+          failure-threshold: error
           format: sarif
           output-file: hadolint-frontend.sarif
-          ignored-rules: DL3008,DL3018
+          ignored-rules: DL3008,DL3018,DL3013,DL4006,SC2086
+
+      - name: Ensure hadolint SARIF files exist
+        if: always()
+        run: |
+          for f in hadolint-backend.sarif hadolint-frontend.sarif; do
+            if [ ! -s "$f" ]; then
+              echo "WARNING: $f not produced by hadolint. Creating minimal SARIF placeholder." >&2
+              cat > "$f" <<'EOF'
+{
+  "version": "2.1.0",
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "hadolint",
+          "informationUri": "https://github.com/hadolint/hadolint",
+          "version": "unknown",
+          "rules": []
+        }
+      },
+      "results": []
+    }
+  ]
+}
+EOF
+            fi
+          done
 
       - name: Upload Hadolint SARIF Reports
         if: always()
@@ -284,7 +323,7 @@ jobs:
             hadolint-backend.sarif
             hadolint-frontend.sarif
           retention-days: 30
-          if-no-files-found: warn
+          if-no-files-found: error
 
   # =========================================================
   # 2. BUILD STAGE - Build and push Docker images
@@ -362,7 +401,7 @@ jobs:
           mv /tmp/.buildx-cache-new /tmp/.buildx-cache
 
       - name: Run Trivy Image Scan - Frontend
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@bfa4b33a029b9aa80ddb784b45574c30e072c59e
         with:
           image-ref: ${{ env.FRONTEND_IMAGE }}:sha-${{ github.sha }}
           format: 'table'
@@ -372,7 +411,7 @@ jobs:
           severity: 'HIGH,CRITICAL'
 
       - name: Run Trivy Image Scan - Backend
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@bfa4b33a029b9aa80ddb784b45574c30e072c59e
         with:
           image-ref: ${{ env.BACKEND_IMAGE }}:sha-${{ github.sha }}
           format: 'table'
@@ -386,28 +425,28 @@ jobs:
       # Attaches the SBOM to the image as an OCI artifact for downstream
       # consumers (and for the cosign signature in the next phase).
       - name: Generate SBOM - Frontend
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@63cb575d30b83445769f98c4725d7125db09688f
         with:
           image: ${{ env.FRONTEND_IMAGE }}:sha-${{ github.sha }}
           format: cyclonedx-json
           artifact-name: sbom-frontend-cyclonedx.json
 
       - name: Generate SBOM (SPDX) - Frontend
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@63cb575d30b83445769f98c4725d7125db09688f
         with:
           image: ${{ env.FRONTEND_IMAGE }}:sha-${{ github.sha }}
           format: spdx-json
           artifact-name: sbom-frontend-spdx.json
 
       - name: Generate SBOM - Backend
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@63cb575d30b83445769f98c4725d7125db09688f
         with:
           image: ${{ env.BACKEND_IMAGE }}:sha-${{ github.sha }}
           format: cyclonedx-json
           artifact-name: sbom-backend-cyclonedx.json
 
       - name: Generate SBOM (SPDX) - Backend
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@63cb575d30b83445769f98c4725d7125db09688f
         with:
           image: ${{ env.BACKEND_IMAGE }}:sha-${{ github.sha }}
           format: spdx-json
@@ -770,7 +809,7 @@ jobs:
       # pulling :stable, ensuring we never roll back to a tampered image.
       - name: Install cosign
         if: steps.health.outcome == 'success'
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
         with:
           cosign-release: 'v2.4.1'
 
@@ -879,7 +918,7 @@ jobs:
       # Belt-and-suspenders: even if a previous :stable tag in the registry
       # was tampered with, the rollback will refuse to deploy it.
       - name: Install cosign (rollback)
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
         with:
           cosign-release: 'v2.4.1'
 

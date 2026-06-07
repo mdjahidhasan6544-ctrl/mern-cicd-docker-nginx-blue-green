@@ -2,6 +2,12 @@
 FROM node:22-alpine@sha256:968df39aedcea65eeb078fb336ed7191baf48f972b4479711397108be0966920 AS base
 WORKDIR /app
 
+# Container image metadata
+LABEL org.opencontainers.image.title="mern-backend" \
+      org.opencontainers.image.description="MERN backend service (Node.js/Express/MongoDB)" \
+      org.opencontainers.image.source="https://github.com/mdjahidhasan6544-ctrl/mern-cicd-docker-nginx-blue-green" \
+      org.opencontainers.image.licenses="MIT"
+
 # Upgrade all OS packages to latest patched versions to clear Trivy CVEs
 RUN apk upgrade --no-cache
 
